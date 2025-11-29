@@ -12,15 +12,17 @@ STRIPE_KEY = os.getenv("STRIPE_KEY")
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
 TWILIO_FROM = os.getenv("TWILIO_FROM")
-SUCCESS_URL = os.getenv("SUCCESS_URL", "https://sofia-stripe.onrender.com/gracias")
-CANCEL_URL = os.getenv("CANCEL_URL", "https://sofia-stripe.onrender.com/cancelado")
+SUCCESS_URL = os.getenv("SUCCESS_URL", "https://agenciaaduanalhoymismo.com/gracias")
+CANCEL_URL = os.getenv("CANCEL_URL", "https://agenciaaduanalhoymismo.com/cancelado")
 
-# Validar que las variables críticas estén configuradas (Solo si no estamos importando para tests)
+# Link de tu calendario (Calendly, Cal.com, etc.) para que Sofía lo envíe también
+CALENDAR_LINK = "https://cal.com/tony-hoymismo/consulta" 
+
+# Validar que las variables críticas estén configuradas
 if __name__ != "__main__": 
-    # Esto evita errores si corres localmente sin .env a veces, pero en render es vital
     pass 
 
-# Configurar Stripe y Twilio (Manejamos el error si faltan las keys para que no truene el server al inicio)
+# Configurar Stripe y Twilio
 if STRIPE_KEY:
     stripe.api_key = STRIPE_KEY
 if TWILIO_SID and TWILIO_TOKEN:
@@ -35,71 +37,59 @@ class ToolCallRequest(BaseModel):
 async def root():
     return {"status": "active", "service": "Sofia Stripe Voice Agent API"}
 
-@app.get("/gracias")
-async def success_page():
-    return {"status": "success", "message": "¡Gracias por tu pago! Tu suscripción ha sido procesada exitosamente."}
-
-@app.get("/cancelado")
-async def cancel_page():
-    return {"status": "cancelled", "message": "El pago fue cancelado."}
-
 @app.post("/elevenlabs-webhook")
 async def handle_tool_call(request: Request):
     """
-    Maneja la llamada de ElevenLabs.
+    Maneja la llamada de ElevenLabs, genera link de pago y envía SMS + WhatsApp.
     """
     try:
         data = await request.json()
         print(f"📞 Recibido de ElevenLabs: {data}")
 
-        # --- LÓGICA DE DETECCIÓN CORREGIDA ---
-        # 1. Intentamos buscar el nombre explícito
+        # --- LÓGICA DE DETECCIÓN INTELIGENTE ---
         tool_name = data.get("name") or data.get("tool_name")
-        
-        # 2. Inicializamos parámetros
         parameters = {}
 
-        # CASO A: ElevenLabs envía estructura completa (wrapper)
+        # Si ElevenLabs manda estructura completa
         if tool_name:
             parameters = data.get("arguments") or data.get("parameters", {})
         
-        # CASO B (El que te está pasando): ElevenLabs envía solo los datos crudos
+        # Si ElevenLabs manda payload crudo (sin nombre), inferimos por el teléfono
         elif "phone_number" in data:
-            print("💡 Detectado payload directo (sin nombre de herramienta). Asumiendo 'enviar_link_pago'.")
+            print("💡 Detectado payload directo. Asumiendo 'enviar_link_pago'.")
             tool_name = "enviar_link_pago"
             parameters = data
         
-        # --- PROCESAMIENTO ---
+        # --- PROCESAMIENTO DE LA HERRAMIENTA ---
 
         if tool_name == "enviar_link_pago":
             user_phone = parameters.get("phone_number")
 
             if not user_phone:
-                return {"result": "Error: Falta el número de teléfono."}
+                return {"result": "Error: Falta el número de teléfono. Pídeselo al usuario."}
 
-            # Limpieza del número
+            # Limpieza y formateo del número
             user_phone = str(user_phone).strip()
             if not user_phone.startswith('+'):
-                # Asumir México si no trae código, o simplemente agregar el +
+                # Asumimos código de país +52 (México) o +1 (USA) por defecto si falta
                 user_phone = '+' + user_phone
 
             print(f"📱 Procesando pago para: {user_phone}")
 
-            # Verificar que las credenciales existan antes de llamar a APIs externas
             if not STRIPE_KEY or not TWILIO_SID:
-                print("❌ Error: Faltan credenciales de entorno en el servidor")
-                return {"result": "Error de configuración en el servidor (Faltan API Keys)."}
+                return {"result": "Error de configuración en servidor (Faltan API Keys)."}
 
-            # 1. Crear Link de Stripe
+            # 1. Crear Link de Stripe (Anticipo $350 USD)
             checkout_session = stripe.checkout.Session.create(
                 payment_method_types=['card'],
                 line_items=[{
                     'price_data': {
-                        'currency': 'mxn',
+                        'currency': 'usd', # Cambiado a dólares según guion
                         'product_data': {
-                            'name': 'Servicio Premium - Agente Sofia',
+                            'name': 'Anticipo Importación - Agencia HoyMismo',
+                            'description': 'Pago inicial para trámite de importación vehicular.'
                         },
-                        'unit_amount': 5000, 
+                        'unit_amount': 35000, # $350.00 USD (en centavos)
                     },
                     'quantity': 1,
                 }],
@@ -111,27 +101,57 @@ async def handle_tool_call(request: Request):
             payment_url = checkout_session.url
             print(f"💳 Link creado: {payment_url}")
 
-            # 2. Enviar SMS
-            message = twilio_client.messages.create(
-                body=f"Hola, completa tu pago aquí: {payment_url}",
-                from_=TWILIO_FROM,
-                to=user_phone
+            # Mensaje base para enviar
+            mensaje_texto = (
+                f"Hola, soy Sofía de HoyMismo 🚛.\n\n"
+                f"Aquí tienes el enlace seguro para tu anticipo ($350 USD):\n{payment_url}\n\n"
+                f"Si prefieres agendar una videollamada antes, usa este link:\n{CALENDAR_LINK}"
             )
 
-            print(f"✅ SMS enviado: {message.sid}")
+            # 2. Enviar SMS (Canal principal, más seguro)
+            try:
+                msg_sms = twilio_client.messages.create(
+                    body=mensaje_texto,
+                    from_=TWILIO_FROM,
+                    to=user_phone
+                )
+                print(f"✅ SMS enviado: {msg_sms.sid}")
+            except Exception as e:
+                print(f"❌ Falló SMS: {e}")
+                return {"result": "Error enviando el SMS. Verifica el número."}
 
+            # 3. Enviar WhatsApp (Canal secundario)
+            # Nota: Requiere que el usuario haya aceptado mensajes o uses plantillas aprobadas en prod.
+            wa_status = "no enviado"
+            try:
+                msg_wa = twilio_client.messages.create(
+                    body=mensaje_texto,
+                    from_=f"whatsapp:{TWILIO_FROM}",
+                    to=f"whatsapp:{user_phone}"
+                )
+                print(f"✅ WhatsApp enviado: {msg_wa.sid}")
+                wa_status = "enviado"
+            except Exception as wa_e:
+                # No retornamos error fatal, solo logueamos, porque el SMS ya se fue.
+                print(f"⚠️ WhatsApp no se pudo enviar (posible falta de opt-in): {wa_e}")
+                wa_status = "falló (usuario no opt-in)"
+
+            # 4. Respuesta al Agente (Lo que Sofía "sabe" que pasó)
             return {
-                "result": "Enlace enviado exitosamente por SMS. Dile al usuario que revise su celular."
+                "result": (
+                    f"Éxito total. Link de pago generado. "
+                    f"SMS enviado correctamente. WhatsApp status: {wa_status}. "
+                    "Dile al cliente que revise su celular ahora mismo."
+                )
             }
 
         else:
-            print(f"⚠️ Payload desconocido: {data}")
-            return {"result": "Datos recibidos, pero no se reconoció la instrucción."}
+            print(f"⚠️ Herramienta desconocida: {tool_name}")
+            return {"result": "Instrucción recibida pero no reconocida."}
 
     except Exception as e:
         print(f"❌ Error crítico: {str(e)}")
-        # Importante: Devolver un string simple para que el Agente no se rompa
-        return {"result": f"Ocurrió un error técnico procesando la solicitud: {str(e)}"}
+        return {"result": f"Error técnico: {str(e)}"}
 
 if __name__ == "__main__":
     import uvicorn
