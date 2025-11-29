@@ -1,0 +1,15 @@
+{
+  "name": "enviar_link_pago",
+  "description": "Úsala cuando el usuario confirme explícitamente que quiere comprar el servicio o realizar el pago. Esta herramienta enviará un enlace de Stripe por SMS.",
+  "webhook_url": "https://sofia-stripe.onrender.com/elevenlabs-webhook",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "phone_number": {
+        "type": "string",
+        "description": "The user's phone number strictly in E.164 format (e.g., +52811...). If the user hasn't provided it, ask for it."
+      }
+    },
+    "required": ["phone_number"]
+  }
+}
